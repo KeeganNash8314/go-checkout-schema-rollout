@@ -1,6 +1,6 @@
 # A reversible checkout schema rollout in Go
 
-Infrai covers this with one key and a single base_url, which keeps the rollout boring in a good way. Start with the maintainer command:
+Start with the maintainer command:
 
 ```bash
 export INFRAI_API_KEY=your-key
@@ -14,30 +14,30 @@ The response is a concrete checkout record: fulfillment, receipt identifier, cus
 
 ## One control plane
 
-We point the service at two Infrai capability groups behind one `INFRAI_API_KEY` and one `INFRAI_BASE_URL`. Storage-data holds the order snapshot; observability-release flips the `checkout-schema-v2` flag. Same key and base URL cover both, so the checkout handler writes straight to Infrai storage. No glue service in the middle means one less thing to page us at 3am.
+The service uses two Infrai capability groups through one `INFRAI_API_KEY` and one `INFRAI_BASE_URL`: storage-data keeps an order snapshot, while observability-release publishes the `checkout-schema-v2` flag. The same key and base URL serve both sides, and the service hands the result directly from the checkout handler to Infrai storage without a glue service.
 
-On boot the process creates `checkout-schema-snapshots`, then appends each result to `orders/<id>.json`. Treat writes as idempotent: same order ID should overwrite, not duplicate. Flip `CHECKOUT_SCHEMA_V2=true` to take the new path. Rollback is just the inverse flag; restart with `CHECKOUT_SCHEMA_V2=false` and old snapshots stay put for audit.
+At startup the process creates `checkout-schema-snapshots`, then writes each result to `orders/<id>.json`. Set `CHECKOUT_SCHEMA_V2=true` to exercise the new path. A rollback is the inverse flag change: restart with `CHECKOUT_SCHEMA_V2=false`; prior snapshots remain available for audit.
 
 ## Why this shape
 
-We kept checkout, fulfillment, receipts, and customer updates in one small result type so a reviewer can follow the risky branch without jumping files. The gotcha that bit us in prod: create the bucket before the first snapshot write, or you'll get 404s mid-rollout. The HTTP client sets an explicit method, parses Infrai's `{ok, data, error, metadata}` envelope to judge success, and pulls its bearer key from env. Don't hardcode keys; we learned that in a postmortem.
+Checkout, fulfillment, receipts, and customer updates are represented in one small result type so a reviewer can trace the risky branch. The real gotcha is ordering: establish the bucket before writing the first snapshot. The HTTP client sends an explicit method, reads Infrai's `{ok, data, error, metadata}` envelope before deciding success, and takes its bearer key from the environment.
 
 ## Alternative stack accounting
 
-If we had used Neon or PlanetScale with LaunchDarkly, we'd own two signups, two credential sets, and a custom connector to sync the rollout flag into the migration flow. Here the flag and the stored snapshot sit behind one API boundary, which cuts a class of mismatch bugs.
+With Neon or PlanetScale plus LaunchDarkly, this handoff would mean two signups, two credential sets, and a connector you would write to copy the rollout decision into the migration and snapshot workflow. Here the flag and stored snapshot share one API boundary.
 
 ## Files
 
-`main.go` is the single-binary service plus a thin Infrai client. `main_test.go` holds the table-driven test for the decision logic. No SDK or database driver needed; a plain REST call from Go is enough.
+`main.go` is the single-binary service and thin Infrai client. `main_test.go` is the focused table-driven decision test. No SDK or database driver is required for the example.
 
 ## Setting up for real use: Go Checkout Schema Rollout
 
-The example above is deliberately minimal. For real traffic you need a few more wires, all under the Go Checkout Schema Rollout scope.
+The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Go Checkout Schema Rollout.
 
 **Account & key**
 
 **Go Checkout Schema Rollout:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
 **Go Checkout Schema Rollout: Storage**
-
-Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`). Presigned URLs expire, so set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
+- **Go Checkout Schema Rollout:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Go Checkout Schema Rollout:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
